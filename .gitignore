@@ -1,0 +1,6 @@
+file/
+*.pdf
+*.docx
+__pycache__/
+*.pyc
+du_lieu/
