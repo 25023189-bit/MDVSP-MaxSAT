@@ -1,73 +1,122 @@
-# SAT/MaxSAT Encoding for the Multiple Depot Vehicle Scheduling Problem (MDVSP)
+<div align="center">
+
+# SAT/MaxSAT Encoding for the Multiple Depot Vehicle Scheduling Problem
+
+**A MaxSAT model solved with a counterexample-guided refinement (CEGAR) loop, published as a documented negative result.**
+
+![Python](https://img.shields.io/badge/Python-3.9%2B-3776AB?logo=python&logoColor=white)
+![MaxSAT](https://img.shields.io/badge/MaxSAT-EvalMaxSAT%20via%20Hermax-purple)
+![PySAT](https://img.shields.io/badge/PySAT-IDPool%20%2B%20CardEnc-orange)
+![Status](https://img.shields.io/badge/Status-negative%20result-lightgrey)
+![License](https://img.shields.io/badge/License-Apache%202.0-blue)
+
+</div>
+
+---
 
 > **Status: negative result.**
-> The approach is theoretically sound but **does not scale** to large instances, because the number of variables and clauses grows too quickly. This repository is made public so that others can use it as a reference, avoid repeating this direction, and possibly build on it.
+> The approach is theoretically sound but **does not scale** to large instances, because the number of variables and clauses grows too quickly. The repository is public so that others can use it as a reference, avoid repeating this direction, and possibly build on it.
 
 ## Table of Contents
 
-1. [Problem](#1-problem)
-2. [Approach](#2-approach)
-3. [Directory Structure](#3-directory-structure)
-4. [Installation and Usage](#4-installation-and-usage)
-5. [Results and Why It Does Not Scale](#5-results-and-why-it-does-not-scale)
-6. [Future Work](#6-future-work)
-7. [Contributions](#7-contributions)
-8. [Citation](#8-citation)
-9. [License](#9-license)
+1. [Overview](#overview)
+2. [The Problem](#the-problem)
+3. [Method](#method)
+   - [Variables](#variables)
+   - [Constraints](#constraints)
+   - [CEGAR Loop](#cegar-loop)
+   - [Preprocessing](#preprocessing)
+4. [Repository Structure](#repository-structure)
+5. [Installation](#installation)
+6. [Usage](#usage)
+7. [Input & Data](#input--data)
+8. [Results and Why It Does Not Scale](#results-and-why-it-does-not-scale)
+9. [Future Work](#future-work)
+10. [Authors](#authors)
+11. [Citation](#citation)
+12. [License](#license)
 
-## 1. Problem
+---
 
-The **Multiple Depot Vehicle Scheduling Problem (MDVSP)** with a single homogeneous vehicle type: assign trips with fixed timetables to vehicles stationed at multiple depots such that:
+## Overview
 
-- Each trip is served exactly once.
-- Each vehicle departs from a depot and **must return to that same depot**.
-- The number of vehicles departing from depot `d` does not exceed `r_d`.
-- Two consecutive trips on the same vehicle must be compatible in terms of time and travel.
-- The total cost of waiting and deadheading (including pull-out, pull-in, and trip-connection costs) is **minimized**.
+This project tries to solve the **Multiple Depot Vehicle Scheduling Problem (MDVSP)** with a purely logical approach instead of the usual LP/MIP or column-generation methods:
+
+| Component | File | Role |
+|---|---|---|
+| **Base MaxSAT model** | `xay_dung_mo_hinh.py` | Hard clauses for flow conservation and depot capacity, soft clauses for arc costs. |
+| **Counterexample detection** | `kiem_dinh.py` | Decodes a solution, traces vehicle routes and finds routes that do not return to their depot, as well as subtours. |
+| **Refinement** | `tinh_chinh.py` | Generates clauses that exclude the violating paths. |
+| **Preprocessing** | `tien_xu_ly.py` | BFS reachability tables that remove arcs that cannot lie on a closed tour through any depot. |
+
+The "return to the depot of origin" condition is deliberately **left out of the base model** and added lazily, which keeps the first model smaller but, as the results show, is not enough for large instances.
+
+## The Problem
+
+MDVSP with a single homogeneous vehicle type: trips with fixed timetables are assigned to vehicles stationed at several depots such that
+
+- each trip is served exactly once;
+- each vehicle leaves a depot and **must return to that same depot**;
+- the number of vehicles leaving depot `d` does not exceed its capacity `r_d`;
+- two consecutive trips of one vehicle are compatible in time and travel;
+- the total cost of waiting and deadheading (pull-out, pull-in and trip-connection costs) is **minimised**.
 
 Main references:
 
 - Kulkarni, Krishnamoorthy, Ranade, Ernst, Patil (2018). *A new formulation and a column generation-based heuristic for the multiple depot vehicle scheduling problem.* Transportation Research Part B, 118, 457–487.
 - Laurent, B. & Hao, J.-K. (2009). *Iterated local search for the multiple depot vehicle scheduling problem.* Computers & Industrial Engineering, 57, 277–286.
 
-## 2. Approach
+## Method
 
-Instead of using LP/MIP or column generation as in the papers above, this project attempts to **encode the problem as MaxSAT** and solve it with a **CEGAR** (Counter-Example Guided Abstraction Refinement) loop.
+### Variables
 
-### SAT Model
-
-Boolean variables (defined over the graph of valid arcs):
+Boolean variables are defined over the graph of valid arcs:
 
 | Variable | Meaning |
 |---|---|
-| `s_{i,j}` | Trip `j` is run immediately after trip `i` on the same vehicle |
-| `Pout_{d,j}` | A vehicle leaves depot `d` to run trip `j` as its first trip |
-| `Pin_{i,d}` | A vehicle ends at trip `i` and then returns to depot `d` |
+| `s[i,j]` | trip `j` is run immediately after trip `i` on the same vehicle |
+| `Pout[d,j]` | a vehicle leaves depot `d` to run trip `j` as its first trip |
+| `Pin[i,d]` | a vehicle ends at trip `i` and then returns to depot `d` |
 
-Hard clauses:
+### Constraints
 
-- **Inflow conservation:** each trip `j` has exactly one incoming arc (from another trip or from a depot).
-- **Outflow conservation:** each trip `i` has exactly one outgoing arc (to another trip or back to a depot).
-- **Depot capacity:** the number of `Pout` arcs (and `Pin` arcs) of each depot does not exceed `r_d`.
-
-Soft clauses: each selected arc is penalized by exactly its cost, so MaxSAT minimizes the total cost.
+| Type | Constraint |
+|---|---|
+| **Hard** | **Inflow conservation:** each trip `j` has exactly one incoming arc (from another trip or from a depot). |
+| **Hard** | **Outflow conservation:** each trip `i` has exactly one outgoing arc (to another trip or back to a depot). |
+| **Hard** | **Depot capacity:** the number of `Pout` arcs, and of `Pin` arcs, of each depot is at most `r_d`. |
+| **Soft** | Every selected arc is penalised by exactly its cost, so MaxSAT minimises the total cost. |
 
 ### CEGAR Loop
 
-The base model does **not** enforce the condition "a vehicle returns to its depot of origin". This condition is added incrementally:
+The base model does **not** enforce that a vehicle returns to its depot of origin. This condition is added incrementally:
 
-1. Solve the current MaxSAT model.
-2. **Validate the solution** (`kiem_dinh.py`): trace each vehicle route, and find routes with `d_start != d_end` as well as subtours.
-3. If there are no violations: the solution is globally optimal; stop.
-4. Otherwise: generate **refinement clauses** (`tinh_chinh.py`) that exclude the violating paths (prefix/suffix pruning, forbidding entire paths, breaking subtours), add them to the solver, and return to step 1.
-
-**Preprocessing** (`tien_xu_ly.py`): BFS is used to compute two tables, `reach_from[d]` and `reach_to[d]`, to eliminate early any arcs that cannot belong to a closed tour through some depot.
-
-## 3. Directory Structure
-
+```text
+repeat (at most 100 iterations, 3600 s in total):
+    solve the current MaxSAT model
+    validate the solution                      # kiem_dinh.py
+        trace every vehicle route
+        look for routes with start depot ≠ end depot, and for subtours
+    if no violation:                           # the solution is globally optimal
+        stop
+    else:
+        add refinement clauses                 # tinh_chinh.py
+            prefix / suffix pruning
+            forbidding entire violating paths
+            breaking subtours
 ```
+
+The solver is kept alive between iterations (`hermax.incremental`, EvalMaxSAT), so clauses are added without rebuilding the model.
+
+### Preprocessing
+
+`tien_xu_ly.py` runs BFS to compute two tables, `reach_from[d]` and `reach_to[d]`. An arc that cannot belong to a closed tour through some depot is removed before the model is built.
+
+## Repository Structure
+
+```text
 .
-├── chay_chinh.py            # Entry point: read data -> preprocess -> build model -> CEGAR
+├── chay_chinh.py            # Entry point: read data → preprocess → build model → CEGAR
 ├── requirements.txt
 ├── ma_nguon/
 │   ├── __init__.py
@@ -76,69 +125,89 @@ The base model does **not** enforce the condition "a vehicle returns to its depo
 │   ├── xay_dung_mo_hinh.py  # Builds the base MaxSAT model
 │   ├── kiem_dinh.py         # Decodes solutions, traces routes, finds counterexamples
 │   ├── tinh_chinh.py        # Generates refinement clauses
-│   └── giai_mo_hinh.py      # Standalone trial solving code with timeout (not used in chay_chinh.py)
-└── du_lieu/                 # (not included in the repo) create it yourself and place .inp instance files here
+│   └── giai_mo_hinh.py      # Standalone trial solving code with timeout (not used by chay_chinh.py)
+└── du_lieu/                 # Not included: create it and place the .inp instances here
 ```
 
-> `chay_chinh.py` adds the `ma_nguon/` directory to `sys.path` and reads data from `du_lieu/du_lieu_mau.inp`. Create the `du_lieu/` directory yourself, place an instance file in it and rename it to `du_lieu_mau.inp`, or modify the path in `main()`.
+> `chay_chinh.py` adds `ma_nguon/` to `sys.path` and reads `du_lieu/du_lieu_mau.inp`. Create the `du_lieu/` folder, put an instance in it and rename it to `du_lieu_mau.inp`, or change the path in `main()`.
 
-## 4. Installation and Usage
+## Installation
 
-Requirements: Python 3.9+.
+Requires **Python 3.9+**.
 
-Libraries used:
+Libraries:
 
-- [**Hermax**](https://hermax.readthedocs.io): a Python library for MaxSAT, using the `EvalMaxSAT` solver via `hermax.incremental` (which supports adding clauses incrementally within the CEGAR loop).
-- [**PySAT**](https://pysathq.github.io): `IDPool` is used for variable management and `CardEnc` for encoding cardinality constraints.
+- [**Hermax**](https://hermax.readthedocs.io) — Python MaxSAT library; the `EvalMaxSAT` solver is used through `hermax.incremental`, which supports adding clauses inside the CEGAR loop.
+- [**PySAT**](https://pysathq.github.io) — `IDPool` for variable management and `CardEnc` for cardinality constraints.
 
 ```bash
+git clone https://github.com/<your-username>/<repo-name>.git
+cd <repo-name>
+
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
 pip install -r requirements.txt
 ```
 
-Run:
+## Usage
 
 ```bash
 python chay_chinh.py
 ```
 
-Default parameters in `chay_chinh.py`: a maximum of **100 CEGAR iterations** and a **3600-second** time limit.
+Default parameters in `chay_chinh.py`:
 
-### Input File Format (`.inp`)
+| Parameter | Default |
+|---|---|
+| Maximum CEGAR iterations | 100 |
+| Time limit | 3600 s |
+| Instance | `du_lieu/du_lieu_mau.inp` |
 
-The file consists of whitespace-separated numbers:
+## Input & Data
 
-1. `m` (number of depots), `n` (number of trips).
-2. `m` numbers: the number of vehicles `r_d` for each depot.
-3. A cost matrix of size `(m + n) x (m + n)`, read row by row. Indices `0..m-1` are depots and `m..m+n-1` are trips. A value of `-1` means there is no arc.
+### Instance format (`.inp`)
 
-### Data
+Whitespace-separated numbers:
 
-The test datasets are **not included in the repo**. The standard MDVSP instances used in Pepin et al. (2008) and Laurent & Hao (2009) can be downloaded at <http://people.few.eur.nl/huisman/instances.htm>.
+1. `m` (number of depots) and `n` (number of trips);
+2. `m` numbers: the capacity `r_d` of each depot;
+3. a cost matrix of size `(m + n) × (m + n)`, row by row. Indices `0 … m−1` are depots and `m … m+n−1` are trips. The value `-1` means there is no arc.
 
-## 5. Results and Why It Does Not Scale
+### Benchmark data
 
-- **Small graphs:** for instances with few depots and few trips, the numbers of arcs, variables, and clauses remain small, so the MaxSAT solver can handle them, the CEGAR loop converges, and optimal solutions are obtained.
-- **Larger graphs:** the numbers of variables and clauses **explode**; the solver cannot find a solution within the allotted time (or the model is too large to build or solve). The method produces no results for large instances.
+The test instances are **not included** in this repository. The standard MDVSP instances used by Pepin et al. (2008) and Laurent & Hao (2009) can be downloaded from <http://people.few.eur.nl/huisman/instances.htm>. Please check the terms of use on that page before redistributing them.
+
+## Results and Why It Does Not Scale
+
+| Instance size | Behaviour |
+|---|---|
+| **Small** (few depots, few trips) | Numbers of arcs, variables and clauses stay small; the MaxSAT solver copes, the CEGAR loop converges and optimal solutions are obtained. |
+| **Large** | Numbers of variables and clauses **explode**; the solver finds no solution within the time limit, or the model is too large to build or solve. No results are produced. |
+
+No benchmark table is reported here because the method yields no results on the large standard instances.
 
 Main causes:
 
-- The number of trip-connection arcs `E_compat` grows nearly quadratically with the number of trips `n`, which causes the number of `s_{i,j}` variables and the number of clauses encoding cardinality constraints (sequential counter) to grow very quickly.
-- The CEGAR loop needs many refinement iterations because the "return to the same depot" constraint is absent from the base model; each iteration calls the MaxSAT solver again on an already very large model.
-- The problem has a network-flow structure with an arithmetic objective, so LP/MIP combined with column generation (Kulkarni et al., 2018) is generally more effective than pure SAT at large scale.
+- **Quadratic arc growth.** The number of trip-connection arcs `E_compat` grows almost quadratically in the number of trips `n`. This inflates both the `s[i,j]` variables and the clauses of the cardinality encoding (sequential counter).
+- **Many refinement rounds.** The "return to the same depot" condition is missing from the base model, so the CEGAR loop needs many iterations, and each iteration calls the MaxSAT solver again on an already very large model.
+- **Problem structure.** MDVSP has a network-flow structure with an arithmetic objective, so LP/MIP combined with column generation (Kulkarni et al., 2018) is generally more effective than pure SAT at large scale.
 
-## 6. Future Work
+## Future Work
 
-- Reduce the number of variables: stronger arc filtering, symmetry breaking, and a more compact time-space model (see the inventory formulation of Kulkarni et al.).
-- More compact encodings for cardinality constraints.
-- Combine SAT with LP: use SAT to initialize columns for column generation, or use Logic-based Benders Decomposition.
-- Use heuristic solutions (e.g., ILS) as an initial upper bound for MaxSAT.
+- Fewer variables: stronger arc filtering, symmetry breaking, and a more compact time-space model (see the inventory formulation of Kulkarni et al.).
+- More compact encodings of the cardinality constraints.
+- Combining SAT with LP: use SAT to initialise columns for column generation, or use Logic-Based Benders Decomposition.
+- Use heuristic solutions (for example iterated local search) as an initial upper bound for MaxSAT.
 
-## 7. Contributions
+## Authors
 
-- **SAT model and method idea:** Nguyễn Kim Trung Đức.
-- **Code implementation and experiments:** Bùi Thế Dũng.
+| Contributor | Role |
+|---|---|
+| **Nguyễn Kim Trung Đức** | SAT model and method idea |
+| **Bùi Thế Dũng** | Code implementation and experiments |
 
-## 8. Citation
+## Citation
 
 If you reuse this work, please cite Hermax:
 
@@ -154,6 +223,8 @@ If you reuse this work, please cite Hermax:
 
 Please also cite the paper of the backend solver you use (see the Hermax documentation).
 
-## 9. License
+## License
 
-Copyright 2026 Bùi Thế Dũng. This project is released under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+Copyright 2026 Bùi Thế Dũng. Released under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0).
+
+The benchmark instances are not part of this repository and remain subject to their original terms.
